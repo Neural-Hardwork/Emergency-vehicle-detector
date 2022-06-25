@@ -1,7 +1,9 @@
 import argparse
+import asyncio
 import os
 import sys
 from pathlib import Path
+from turtle import Turtle
 
 import torch
 import torch.backends.cudnn as cudnn
@@ -15,7 +17,7 @@ from utils.torch_utils import select_device, time_sync
 from utils.plots import Annotator, colors, save_one_box
 
 
-def run(
+async def run(
         weights,  # model.pt path(s)
         source,  # file/dir/URL/glob, 0 for webcam
         data='./data.yml',  # dataset.yaml path
@@ -32,7 +34,7 @@ def run(
         agnostic_nms=False,  # class-agnostic NMS
         augment=False,  # augmented inference
         visualize=False,  # visualize features
-        update=True,  # update all models
+        update=False,  # update all models
         project='results/',  # save results to project/name
         name='exp',  # save results to project/name
         exist_ok=False,  # existing project/name ok, do not increment
@@ -43,7 +45,7 @@ def run(
         dnn=False,  # use OpenCV DNN for ONNX inference
 ):
     source = str(source)
-    save_img = False
+    save_img = True
     is_file = Path(source).suffix[1:] in (IMG_FORMATS + VID_FORMATS)
     is_url = source.lower().startswith(('rtsp://', 'rtmp://', 'http://', 'https://'))
     webcam = source.isnumeric() or source.endswith('.txt') or (is_url and not is_file)
@@ -72,8 +74,9 @@ def run(
     vid_path, vid_writer = [None] * bs, [None] * bs
 
     # Run inference
-    model.warmup(imgsz=(1 if pt else bs, 3, *imgsz))  # warmup
+    model.warmup(imgsz=(1 if pt else bs, 3, *imgsz))  # 
     dt, seen = [0.0, 0.0, 0.0], 0
+
     for path, im, im0s, vid_cap, s in dataset:
         t1 = time_sync()
         im = torch.from_numpy(im).to(device)
@@ -81,6 +84,7 @@ def run(
         im /= 255  # 0 - 255 to 0.0 - 1.0
         if len(im.shape) == 3:
             im = im[None]  # expand for batch dim
+    
         t2 = time_sync()
         dt[0] += t2 - t1
 
@@ -98,6 +102,8 @@ def run(
         # pred = utils.general.apply_classifier(pred, classifier_model, im, im0s)
         # Process predictions
         for i, det in enumerate(pred):  # per image
+            if det.nelement() == 0:
+                return False
             seen += 1
             if webcam:  # batch_size >= 1
                 p, im0, frame = path[i], im0s[i].copy(), dataset.count
@@ -111,17 +117,23 @@ def run(
             s += '%gx%g ' % im.shape[2:]  # print string
             gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh
             annotator = Annotator(im0, line_width=line_thickness, example=str(names))
+            print(det)
             if len(det):
                 # Rescale boxes from img_size to im0 size
                 det[:, :4] = scale_coords(im.shape[2:], det[:, :4], im0.shape).round()
-
+                ans = []
                 # Print results
                 for c in det[:, -1].unique():
+                    ans.append(int(c))
                     n = (det[:, -1] == c).sum()  # detections per class
                     s += f"{n} {names[int(c)]}{'s' * (n > 1)}, "  # add to string
+                print(ans)
+                if 1 in ans:
+                    return True
+                return False
                 # Write results
                 for *xyxy, conf, cls in reversed(det):
-                    return bool(int(cls))
+
                     if save_txt:  # Write to file
                         xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
                         line = (cls, *xywh, conf) if save_conf else (cls, *xywh)  # label format
@@ -159,21 +171,21 @@ def run(
                     vid_writer[i].write(im0)
 
         # Print time (inference-only)
-        # LOGGER.info(f'{s}Done. ({t3 - t2:.3f}s)')
+        LOGGER.info(f'{s}Done. ({t3 - t2:.3f}s)')
 
-    # Print results
-    t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
-    LOGGER.info(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {(1, 3, *imgsz)}' % t)
-    if save_txt or save_img:
-        s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
-        LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}{s}")
-    if update:
-        strip_optimizer(weights)  # update model (to fix SourceChangeWarning)
+    # # Print results
+    # t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
+    # LOGGER.info(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {(1, 3, *imgsz)}' % t)
+    # if save_txt or save_img:
+    #     s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
+    #     LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}{s}")
+    # if update:
+    #     strip_optimizer(weights)  # update model (to fix SourceChangeWarning)
 
 
 if __name__ == "__main__":
-    weights = "weights/yolov5s.pt"
+    weights = "models/300_epochs/weights/best.pt"
     device = 'cpu'
     imgsz = (1280, 1024)
-    source = "videos/IMG_3311.mp4"
-    run(weights=weights, source=source, imgsz=imgsz, device=device)
+    source = "datasets/images/val/"
+    print(asyncio.run(run(weights=weights, source=source, imgsz=imgsz, device=device)))
